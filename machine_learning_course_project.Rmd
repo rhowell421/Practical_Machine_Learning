@@ -1,0 +1,146 @@
+---
+title: "Predicting Exercise Barbell Reps"
+author: "Rhowell"
+date: "2022-10-19"
+output:
+  html_document:
+    keep_md: yes
+    theme: "cosmo"
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+  github_document: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+## Data Import
+
+```{r, cache = T, message=FALSE, warning=FALSE}
+# load libraries
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+
+# save URL as variable
+train_url <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+test_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# download data
+download.file(url = train_url, destfile = "train_df.csv")
+download.file(url = test_url, destfile = "test_df.csv")
+
+#Reading the file
+train_df <- read.csv(file = "train_df.csv")
+test_df <- read.csv(file = "test_df.csv")
+
+rbind(dim(train_df),
+  dim(test_df))
+```
+
+## Cleaning data
+
+We will download and split the training dataset into training and validation.
+
+```{r, cache=TRUE}
+# only keep numeric columns that are not blank
+train_cleaned <- train_df %>% 
+    mutate(classe = as.factor(classe)) %>%
+    select(-"X") %>%
+    discard(is.character) %>% 
+    select_if(~ !any(is.na(.)))
+
+test_cleaned <- test_df %>% 
+    select(-c("X", "problem_id")) %>%
+    discard(is.character) %>% 
+    select_if(~ !any(is.na(.)))
+
+# split training into training and validation sets
+set.seed(45454)
+in_train <- createDataPartition(train_cleaned$classe, p=0.70, list=F)
+train_split <- train_cleaned[in_train, ]
+validation_data <- train_cleaned[-in_train, ]
+```
+
+## k-Nearest Neighbors
+
+Now we have the cleaned data sets, we will use the first model as k Nearest Neighbor using 5-fold cross-validation.
+
+```{r, cache=TRUE}
+# normalize data with min-max
+min_max_norm <- function(x) {
+     (x - min(x)) / (max(x) - min(x))
+}
+ 
+train_norm <- as.data.frame(lapply(train_split[,-56], min_max_norm)) %>%
+   cbind(train_split[56])
+validation_norm <- as.data.frame(lapply(validation_data[,-56], min_max_norm)) %>%
+   cbind(validation_data[,56])
+ 
+# check for NAs
+rbind(anyNA(train_norm),
+   anyNA(validation_norm))
+
+# train kNN
+trctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+set.seed(12121)
+knn_fit <- train(classe ~., data = train_norm, method = "knn",
+    trControl=trctrl,
+    preProcess = c("center"),
+    tuneLength = 10)
+
+```
+
+Accuracy is `r knn_fit$results[1,2]` with k optimized at `r knn_fit$results[1,1]`.
+
+Let's test on the validation set.
+
+```{r, cache=TRUE}
+predict_knn <- predict(knn_fit, validation_norm)
+confusionMatrix(validation_data$classe, predict_knn)
+accuracy_knn <- postResample(predict_knn, validation_data$classe)
+knn_oose <- 1 - as.numeric(confusionMatrix(validation_data$classe, predict_knn)$overall[1])
+```
+
+Accuracy is `r round(accuracy_knn[1], 4) `, and estimated out of sample error is `r round(knn_oose, 4)`.
+
+## Random Forest
+
+After looking at kNN, we will use Random Forest, another classification algorithm, to see how it compares. We will use 5-fold cross validation.
+
+```{r, cache=TRUE}
+controlRf <- trainControl(method="cv", 5)
+rf_fit <- train(classe ~ ., data=train_split, method="rf", trControl=controlRf, ntree=100)
+rf_fit
+```
+
+Accuracy is `r rf_fit$results[2,2]` with trees optimized at `r rf_fit$results[2,1]`.
+
+
+```{r, cache=TRUE}
+predict_rf <- predict(rf_fit, validation_data)
+confusionMatrix(validation_data$classe, predict_rf)
+accuracy_rf <- postResample(predict_rf, validation_data$classe)
+oose_rf <- 1 - as.numeric(confusionMatrix(validation_data$classe, predict_rf)$overall[1])
+```
+
+Accuracy is `r round(accuracy_rf[1], 4)`, and estimated out of sample error is `r oose_rf`.
+
+## Predicting the test set
+
+To predict the results of the test, we will use the Random Forest model.
+
+```{r, cache=TRUE}
+predict_test <- predict(rf_fit, test_cleaned)
+rbind(predict_test)
+```
+
+
